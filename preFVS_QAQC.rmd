@@ -1,0 +1,254 @@
+---
+title: "QA/QC Check for Pre-FVS data"
+author: "Eric Lewis-Clark"
+date: "August 2, 2018"
+output: html_document
+---
+
+This set of code will preform QA/QC analysis on spreadsheets that are coming from a thirdparty and about to be run in FVS Cloud (or regular FVS)
+
+To start, we will need to load some packages. If you do not have these packages you will need to install them once. To install type: install.packages("package name") into the console. Once you have installed all the packages you can run the chunk below.
+
+```{r}
+library(sp)
+library(raster)
+library(maptools)
+library(rgdal)
+library(fields)
+library(dplyr)
+library(odbc)
+library(DBI)
+library(RSQLite)
+```
+
+Now we will set the working directory, bring in files and connect to the database to acccess the TreeInIt and PlotInIt files.
+
+It would be good to have a file setup similar to this: Main Folder (FVS QAQC) within the main folder have 4 folders labeled "code", "shapefiles", "databases", and "results" so everything can run smoothly and you only need to change some names of the input files not pathways
+
+```{r}
+#Set working Directory 
+setwd("~/FVS QAQC/code")
+#Bring the the plot shapefile and the outline shapefile in. 
+plots<- readOGR("../shapefiles/EBC COMPLETED PLOTS.shp")
+outline <- readOGR("../shapefiles/nwk_project_forest_area.shp")
+
+##Plot them to see if this is infact the correct shapefile and plot layout
+
+plot(outline)
+plot(plots, add = T, col = "Red")
+
+#Connect to the .db database and make sure the files in it are the ones you want to use
+con <- dbConnect(RSQLite::SQLite(), "../databases/EBC_FVS_DATA_7_25_18.db")     
+con
+alltables = dbListTables(con)
+alltables
+
+#Extract the TreeInIt file and the lost of plot names from the PlotInIt file
+##Take a look at them to see if they make sense 
+Tree <- dbGetQuery(con, 'select * from FVS_TreeInIt')
+head(Tree)
+plotID <- dbGetQuery(con, 'select Plot_ID from FVS_PlotInIt')
+head(plotID)
+
+dbDisconnect(con)
+```
+
+
+Now that everything is in we can start running the QA/QC check. 
+First off we will check to make sure that the plot names supplied in the GPS and they plot names in the Database supplied by the contractor are the same
+
+```{r}
+head(plots@data)###Run this code if you are not sure where your plot names are located 
+
+plotshp.df <- data.frame(plots$ID)
+head(plotshp.df) 
+
+##Check the length of both sets of Plot IDs. If they are the same we can move on to the next step, to see if they are the same names. If they are not the same length we need to stop and find the discrepencies  
+length(plotshp.df$plots.ID)
+
+length(plotID$Plot_ID)
+
+##Now we can merge and see if they are the same names. If the merge happens with no errors or it returing a NA they have the same names
+
+SameNames <- merge(plotID,plotshp.df, by.x = "Plot_ID", by.y = "plots.ID")
+##Check to make sure that you arent getting any error or NAs or 0s by checking the head of the merged file
+head(SameNames)
+
+##Check the length again to be sure that the merged file is still the same lenght as the two files going into it
+length(SameNames$Plot_ID)
+length(plotshp.df$plots.ID)
+length(plotID$Plot_ID)
+
+```
+
+Now we will check for missing data in any of the cloumns.By taking the mean of a dataset we can find out if there are missing values becasue if there are NAs we will get an NA for the mean.
+
+```{r}
+mean(Tree$DBH)
+mean(Tree$Ht)
+mean(Tree$HtTopK)
+mean(Tree$Stand_ID)
+mean(Tree$Plot_ID)
+mean(Tree$Tree_ID)
+mean(Tree$Tree_Count)
+mean(Tree$Species)
+mean(Tree$History)
+mean(Tree$CrRatio)
+mean(Tree$Damage1)
+mean(Tree$Severity1)
+mean(Tree$Damage2)
+mean(Tree$Severity2)
+```
+Now that we know there is no NA in the data lets make sure that all of the fields are the same lenght long
+
+```{r}
+length(na.omit(Tree$DBH))
+length(na.omit(Tree$Ht))
+length(na.omit(Tree$HtTopK))
+length(na.omit(Tree$Stand_ID))
+length(na.omit(Tree$Plot_ID))
+length(na.omit(Tree$Tree_ID))
+length(na.omit(Tree$Tree_Count))
+length(na.omit(Tree$Species))
+length(na.omit(Tree$History))
+length(na.omit(Tree$CrRatio))
+length(na.omit(Tree$Damage1))
+length(na.omit(Tree$Severity1))
+length(na.omit(Tree$Damage2))
+length(na.omit(Tree$Severity2))
+```
+
+Now lets make sure that all the values make sense in terms of an inventory.
+i.e.the DBH is from 1-100, height is from 5-200...
+
+```{r}
+##Range for DBH should be between 1 and 100
+
+range(Tree$DBH)
+
+###Range for Heights should be between 5 and 200
+
+range(Tree$Ht)
+
+##Range of canopy cover should be between 0-100
+range(Tree$CrRatio)
+
+##Check the arb website for list of acceptable species in the area and make sure that species that are found here are the same as the accepted species
+
+unique(Tree$Species)
+
+##History should only have 1 (alive) or 9 (dead) trees in it.
+
+unique(Tree$History)
+
+##Tree count should only be 20 (trees DBH >= 5) or 200 (trees DBH < 5)
+
+unique(Tree$Tree_Count)
+
+##Make sure that all of the HtTopK are shorter than their corresponding tree
+
+HeightTest <- Tree$Ht - Tree$HtTopK
+subset(HeightTest, HeightTest <= 0)
+```
+
+
+Now lets make some plots and see if we can se any outlyers in the data.
+The first group of plots we will make are DBH~Height seperating by species and colored by Crown Cover
+
+```{r}
+##First lets subset the data into different species
+Tree98 <- subset.data.frame(Tree, Tree$Species == 98)
+Tree42 <- subset.data.frame(Tree, Tree$Species == 42)
+Tree920 <- subset.data.frame(Tree, Tree$Species == 920)
+Tree747 <- subset.data.frame(Tree, Tree$Species == 747)
+
+##Now we can make a plot for all the different species 
+plot(Ht~DBH, data = Tree98, col = CrRatio, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Sitka Spruce")
+legend("bottomright", legend = sort.int(unique(Tree98$CrRatio)),
+       fill = sort.int(unique(Tree98$CrRatio)), bty = "n", 
+       title = "Crown cover (%)",cex = 0.5)
+
+plot(Ht~DBH, data = Tree42, col = CrRatio, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Alaska Cedar")
+legend("bottomright", legend = sort.int(unique(Tree42$CrRatio)),
+       fill = sort.int(unique(Tree42$CrRatio)), bty = "n", title = "Crown cover (%)")
+
+plot(Ht~DBH, data = Tree920, col = CrRatio, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Willow sp.")
+legend("bottomright", legend = sort.int(unique(Tree920$CrRatio)),
+       fill = sort.int(unique(Tree920$CrRatio)), bty = "n", title = "Crown cover (%)")
+
+plot(Ht~DBH, data = Tree747, col = CrRatio, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Cottonwood")
+legend("bottomright", legend = sort.int(unique(Tree747$CrRatio)),
+       fill = sort.int(unique(Tree747$CrRatio)), bty = "n",title = "Crown cover (%)")
+
+
+```
+
+We will also showcase weather the tree had a broken top using the same type of plots
+
+```{r}
+Tree$ME <- Tree$HtTopK
+
+Tree$ME[Tree$ME >0] <- 2
+Tree$ME[Tree$ME == 0] <- 1
+
+Tree98 <- subset.data.frame(Tree, Tree$Species == 98)
+Tree42 <- subset.data.frame(Tree, Tree$Species == 42)
+Tree920 <- subset.data.frame(Tree, Tree$Species == 920)
+Tree747 <- subset.data.frame(Tree, Tree$Species == 747)
+
+plot(Ht~DBH, data = Tree98, col = ME, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Sitka Spruce")
+legend("bottomright", legend = c("Measured", "Estimated"),
+       fill =c(1,2), bty = "n", title = "Measured Height vs Estimated Height")
+
+plot(Ht~DBH, data = Tree42, col = ME, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Alaska Cedar")
+legend("bottomright", legend = c("Measured", "Estimated"),
+       fill =c(1,2), bty = "n",title = "Measured Height vs Estimated Height")
+
+plot(Ht~DBH, data = Tree920, col =ME, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Willow sp.")
+legend("bottomright", legend = c("Measured", "Estimated"),
+       fill =c(1,2), bty = "n", title = "Measured Height vs Estimated Height")
+
+plot(Ht~DBH, data = Tree747, col = ME, pch = 19, 
+     ylab = "Height (ft)", xlab = "Diameter at Breast Height (DBH; in)",
+     main = "Cottonwood")
+legend("bottomright", legend = c("Measured", "Estimated"),
+       fill =c(1,2), bty = "n",title = "Measured Height vs Estimated Height")
+
+```
+
+Lets check to see if there are any "problem" plots. 
+i.e. plots that only have dead trees, plots that have only tally trees and plots that have no trees
+
+```{r}
+#First we will look to see if there are any plots with only tally trees in them
+plotmaxDBH <- aggregate(Tree, list(plot = Tree$Plot_ID), max)
+summary(plotmaxDBH$DBH)
+smallmax <- subset.data.frame(plotmaxDBH, plotmaxDBH$DBH < 5)
+smallmax$Plot_ID
+## Next we will determine if there are any plots with only dead trees in them.
+Tree$dead <- Tree$History
+Tree$dead[Tree$History == 9] <- 0
+
+Dead_Plot <- aggregate(dead ~ Plot_ID, data = Tree, sum)
+subset(Dead_Plot, Dead_Plot$dead == 0)
+
+##Finally lets see if there are any differences in our plots from PlotInIt and TreesInIt
+
+c(setdiff(unique(Tree$Plot_ID), plotID$Plot_ID), setdiff(plotID$Plot_ID, unique(Tree$Plot_ID)))
+##These are the missing plots
+
+```
